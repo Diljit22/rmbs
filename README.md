@@ -1,136 +1,49 @@
-# RMBS Structuring & Underwriting Demo
+# RMBS Structuring, Underwriting & Sensitivity Engine
 
-## Overview
-
-This project demonstrates a simplified **Residential Mortgage-Backed Security (RMBS)** transaction workflow:
-
-1. **Loan Ingestion**  
-   Loads mortgage loans from a CSV file (`sample_loans.csv`) or, if unavailable, generates a synthetic pool.  
-
-2. **Risk Modeling**  
-   - **Default:** Uses a logistic-based default probability that factors in FICO scores and loan-to-value ratios.  
-   - **Prepayment:** Applies a constant annual CPR converted to monthly probabilities.  
-
-3. **Cash Flow Simulation**  
-   - Implements standard mortgage amortization (principal + interest).  
-   - Assesses whether a loan defaults (with partial recovery) or prepays.  
-
-4. **Structuring**  
-   - Aggregates monthly interest and principal from the pool.  
-   - Distributes proceeds to three tranches (Senior, Mezzanine, Equity) via a simple top-down waterfall.  
-
-5. **Bond Analytics**  
-   - Computes each tranche’s **Yield (IRR)** and **Weighted Average Life (WAL)**.  
-
-6. **Visualization**  
-   - Optionally produces a stacked area plot of monthly tranche cash flows.  
-
-7. **Testing**  
-   - Contains unit tests that verify core functionalities, ensuring stability and correctness.  
+A standard Residential Mortgage-Backed Security (RMBS) structuring and simulation engine. The model simulates monthly loan-level amortization, default, and prepayment cash flows, routing pool collections through a sequential-pay waterfall to evaluate bond performance metrics across multidimensional stress scenarios.
 
 ---
 
-## Requirements
+## Technical Features
 
-- **Python 3.8+**  
-- Refer to `requirements.txt` for required libraries:
-  numpy>=1.21.0
-  pandas>=1.3.0
-  matplotlib>=3.4.0
-  pytest>=7.0.0
-  black>=23.1.0
-  flake8>=5.0.0
+### 1. Strategic Risk Modeling (Strategy Pattern)
+Risk models are decoupled from the core simulation loop using Abstract Base Classes (`PrepaymentModel` and `DefaultModel`). This allows you to easily write and plug in custom hazard models without refactoring the simulation engine.
+* **PSA Prepayment Model (`PSAModel`):** Implements the standard Public Securities Association curve (prepayments rising linearly over the first 30 months of seasoning before leveling off at a flat CPR).
+* **Logistic Hazard Model (`LogisticDefaultModel`):** Estimates monthly default probabilities (MDR) based on borrower FICO scores and dynamic LTV limits.
 
-Install all dependencies:
+### 2. Available Funds Sequential Waterfall
+Realized pool collections (scheduled interest, principal, recoveries, and prepayments) are consolidated into a single "Available Funds" bucket. Cash is distributed sequentially:
+1. Senior Interest
+2. Mezzanine Interest
+3. Senior Principal (until retired)
+4. Mezzanine Principal (until retired)
+5. Equity/Residual Principal and Residual Yield (all remaining collections), preventing cash leakage and resolving the excess spread distribution errors common in simple procedural structures.
 
+### 3. Stress-Testing Sensitivity Grid
+A dedicated analysis engine runs multidimensional parameter sweeps (Constant Default Rates [CDR] from 1% to 10% vs. PSA Prepayment Speeds from 50% to 200%) to automatically output structured yield (IRR) and Weighted Average Life (WAL) tables for each tranche.
+
+### 4. Vectorized Metrics & Numerical Guarding
+* **Vectorized WAL:** Weighted Average Life is calculated using vectorized NumPy operations for speed.
+* **Defensive Yield Search:** The bisection search solver contains numerical guards (such as a `-20%` monthly lower bound and clipped denominators) to prevent float underflow and division-by-zero errors when evaluating highly impaired tranches over 360+ periods.
+* **Thread-Safety:** Simulations use localized, thread-safe instances of `np.random.default_rng()`.
+
+---
+
+## Installation & Usage
+
+Install the package and its development requirements (pytest, ruff) in editable mode. 
 ```bash
-pip install -r requirements.txt
+pip install ".[dev]"
 ```
 
----
-
-## Usage
-
-1. **Loan Data**  
-   - If you have a loan dataset, place a CSV file in the project folder or specify its path.  
-   - A sample file (`sample_loans.csv`) is provided.  
-
-2. **Run the Demo**  
-   From the project directory, use:
-
-   ```bash
-   python main.py \
-       --csv sample_loans.csv \
-       --months 360 \
-       --scenario base \
-       --show_plot
-   ```
-
-   - `--csv` indicates the path to your loan CSV. If omitted, a synthetic set of loans is generated.  
-   - `--months` is the number of months to simulate (e.g., 360 for 30 years).  
-   - `--scenario` can be `base`, `stress`, or `optimistic`, defining default/prepayment assumptions.  
-   - `--show_plot` will display a stacked area chart of monthly cash flows allocated to each tranche.  
-
-3. **Results**  
-   - The script prints monthly cash flows for each tranche, as well as **Yield (IRR)** and **WAL**.  
-   - If `--show_plot` is used, a graphical output of monthly cash flows is displayed.  
-
----
-
-## Testing
-
-A suite of **pytest**-based tests is included. Run them with:
-
+### Run a Static Scenario Simulation
+Simulate the portfolio under a preset assumption profile (`base`, `stress`, or `optimistic`) and display a stacked cash flow chart:
 ```bash
-pytest
+python3 main.py --scenario stress --show_plot
 ```
 
-These tests confirm that each component (loan data, default/prepayment models, waterfall allocations, etc.) behaves as intended.
-
----
-
-## Project Structure
-
+### Run the Sensitivity Stress Grid
+Evaluate the structural sensitivity of your tranches over a parameter matrix of CDR and PSA speeds:
 ```bash
-rmbs_demo/
-├── .setup.cfg
-├── README.md
-├── requirements.txt
-├── main.py         # A small script that imports and runs src.main
-├── src/
-│   ├── __init__.py
-│   ├── main.py     # Contains the bulk of the application logic
-│   ├── loan_pool.py
-│   ├── risk_models.py
-│   ├── structuring.py
-│   ├── simulation.py
-│   ├── metrics.py
-│   ├── visualization.py
-│   └── data/
-│       └── sample_loans.csv
-└── tests/
-    ├── test_loan_pool.py
-    ├── test_risk_models.py
-    ├── test_structuring.py
-    ├── test_simulation.py
-    └── test_metrics.py
-
-
+python3 main.py --sensitivity
 ```
-
-- **main.py**  
-  Command-line entry point. Parses arguments, loads loans, runs the simulation, and summarizes results.  
-- **loan_pool.py**  
-  Contains `Loan` data class and methods to load or generate loan data.  
-- **risk_models.py**  
-  Implements default and prepayment probability calculations.  
-- **simulation.py**  
-  Coordinates monthly activity, including amortization, default/prepayment, and aggregation of payments.  
-- **structuring.py**  
-  Defines tranche objects and a waterfall function to allocate monthly cash flows.  
-- **metrics.py**  
-  Provides functions to compute bond-level metrics (Yield/IRR, WAL).  
-- **visualization.py**  
-  Creates a stacked area chart of monthly tranche cash flows.  
-- **tests/**  
-  Contains automated tests to verify correctness.
