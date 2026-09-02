@@ -1,49 +1,85 @@
-#!/usr/bin/env python3
 """
-risk_models.py
+src/risk_models.py
 
-Implements default and prepayment probability functions.
+Implements Abstract Base Classes (Strategy Pattern) for prepayment and default models,
+enabling flexible extensions.
 """
 
 import math
+from abc import ABC, abstractmethod
 from src.loan_pool import Loan
 
 
-def logistic_default_probability(
-    loan: Loan,
-    base_pd_annual: float = 0.03,
-    fico_weight: float = -0.002,
-    ltv_weight: float = 0.01,
-) -> float:
+class PrepaymentModel(ABC):
+    """Abstract base class for mortgage prepayment probability models."""
+
+    @abstractmethod
+    def calculate_monthly_rate(self, loan: Loan) -> float:
+        """Returns the monthly prepayment probability (SMM)."""
+        pass
+
+
+class ConstantPrepaymentRateModel(PrepaymentModel):
+    """Models prepayment using a flat annualized Constant Prepayment Rate (CPR)."""
+
+    def __init__(self, cpr_annual: float = 0.10):
+        self.cpr_annual = min(max(cpr_annual, 0.0), 0.99)
+
+    def calculate_monthly_rate(self, loan: Loan) -> float:
+        return 1.0 - (1.0 - self.cpr_annual) ** (1.0 / 12.0)
+
+
+class PSAModel(PrepaymentModel):
     """
-    Approximate logistic default model using base PD, FICO, and LTV.
-
-    If base_pd_annual is zero or negative, the function returns 0
-    to avoid division by zero.
+    Models prepayment utilizing the standard Public Securities Association (PSA) curve.
     """
-    if base_pd_annual <= 0.0:
-        return 0.0
-    if base_pd_annual >= 1.0:
-        return 1.0
 
-    # Convert base PD to logistic intercept
-    # intercept = -log(1/base_pd - 1)
-    intercept = -math.log((1 / base_pd_annual) - 1 + 1e-9)
+    def __init__(self, speed: float = 100.0):
+        self.speed = max(speed, 0.0)
 
-    fico_diff = loan.fico - 680  # reference FICO
-    ltv_diff_percent = (loan.ltv - 0.8) * 100.0  # difference in percentage points
-
-    z = intercept + (fico_weight * fico_diff) + (ltv_weight * ltv_diff_percent)
-    pd_annual = 1.0 / (1.0 + math.exp(-z))
-
-    # Convert annual PD to monthly PD
-    pd_monthly = 1 - (1 - pd_annual) ** (1 / 12)
-    return max(min(pd_monthly, 1.0), 0.0)
+    def calculate_monthly_rate(self, loan: Loan) -> float:
+        age = max(1, loan.age_months)
+        base_cpr = 0.06 * (age / 30.0) if age < 30 else 0.06
+        cpr_annual = base_cpr * (self.speed / 100.0)
+        cpr_annual = min(max(cpr_annual, 0.0), 0.99)
+        return 1.0 - (1.0 - cpr_annual) ** (1.0 / 12.0)
 
 
-def simple_prepayment_probability(loan: Loan, base_cpr_annual: float = 0.10) -> float:
+class DefaultModel(ABC):
+    """Abstract base class for mortgage default probability models."""
+
+    @abstractmethod
+    def calculate_monthly_rate(self, loan: Loan) -> float:
+        """Returns the monthly probability of default (MDR)."""
+        pass
+
+
+class LogisticDefaultModel(DefaultModel):
     """
-    Simple monthly prepayment probability from an annual CPR.
+    Implements a logistic regression hazard model based on borrower FICO 
+    and current loan-to-value (LTV) ratio.
     """
-    monthly_cpr = 1 - (1 - base_cpr_annual) ** (1 / 12)
-    return max(min(monthly_cpr, 1.0), 0.0)
+
+    def __init__(
+        self,
+        base_pd_annual: float = 0.03,
+        fico_weight: float = -0.002,
+        ltv_weight: float = 0.01,
+    ):
+        self.base_pd_annual = min(max(base_pd_annual, 0.0), 0.99)
+        self.fico_weight = fico_weight
+        self.ltv_weight = ltv_weight
+
+    def calculate_monthly_rate(self, loan: Loan) -> float:
+        if self.base_pd_annual <= 1e-9:
+            return 0.0
+
+        intercept = -math.log((1.0 / self.base_pd_annual) - 1.0 + 1e-9)
+        fico_diff = loan.fico - 680
+        ltv_diff_percent = (loan.ltv - 0.8) * 100.0
+
+        z = intercept + (self.fico_weight * fico_diff) + (self.ltv_weight * ltv_diff_percent)
+        pd_annual = 1.0 / (1.0 + math.exp(-z))
+        
+        pd_monthly = 1.0 - (1.0 - pd_annual) ** (1.0 / 12.0)
+        return min(max(pd_monthly, 0.0), 1.0)

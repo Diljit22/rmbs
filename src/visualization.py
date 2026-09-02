@@ -1,18 +1,16 @@
-#!/usr/bin/env python3
 """
-visualization.py
+src/visualization.py
 
 Function to plot monthly cash flows by tranche.
 """
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 
-def plot_tranche_cash_flows(monthly_results: dict):
+def plot_tranche_cash_flows(monthly_results: dict) -> None:
     """
     Creates a stacked area plot of monthly cash flows for each tranche.
-    monthly_results: {tranche_name: [cf1, cf2, ...], ...}
     """
     tranche_names = list(monthly_results.keys())
     arrays = [np.array(monthly_results[name]) for name in tranche_names]
@@ -23,11 +21,17 @@ def plot_tranche_cash_flows(monthly_results: dict):
         data_matrix[: arr.shape[0], i] = arr
 
     months = np.arange(max_len)
-    plt.figure(figsize=(10, 6))
-    plt.stackplot(months, data_matrix.T, labels=tranche_names)
-    plt.xlabel("Month")
-    plt.ylabel("Cash Flow")
-    plt.title("Monthly Tranche Cash Flows")
-    plt.legend()
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    ax.stackplot(
+        months, data_matrix.T, labels=tranche_names, alpha=0.85, edgecolor="white"
+    )
+
+    ax.set_xlabel("Month", fontsize=11, fontweight="semibold")
+    ax.set_ylabel("Cash Flow ($)", fontsize=11, fontweight="semibold")
+    ax.set_title("Tranche Monthly Cash Flow Distribution", fontsize=13, pad=15)
+    ax.grid(True, linestyle="--", alpha=0.5)
+    ax.legend(loc="upper right", frameon=True, facecolor="white", edgecolor="none")
+
     plt.tight_layout()
     plt.show()

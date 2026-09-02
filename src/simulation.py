@@ -1,89 +1,65 @@
-#!/usr/bin/env python3
 """
-simulation.py
+src/simulation.py
 
-Performs the monthly simulation of all loans and the RMBS structure.
+Runs multi-month loan-level cash flow calculations using modular risk models.
 """
 
+import copy
+from typing import Dict, List
 import numpy as np
-from typing import List, Dict
 from src.loan_pool import Loan
+from src.risk_models import DefaultModel, PrepaymentModel
 from src.structuring import Tranche, allocate_waterfall
-from src.risk_models import logistic_default_probability, simple_prepayment_probability
 
 
 def calculate_monthly_payment(loan: Loan) -> float:
-    """
-    Standard mortgage amortization formula for fully amortizing loans:
-    M = r * P / (1 - (1+r)^-n)
-    where:
-      - r is monthly interest rate
-      - P is current principal
-      - n is number of payments remaining
-    """
     monthly_rate = loan.rate / 12.0
     months_left = loan.term_months - loan.age_months
     if months_left <= 0 or monthly_rate <= 0:
-        # Edge cases: if no interest rate or no months left, no scheduled payment.
         return 0.0
 
-    # M = (monthly_rate * principal) / (1 - (1 + monthly_rate)^(-months_left))
-    denom = 1 - (1 + monthly_rate) ** (-months_left)
+    denom = 1.0 - (1.0 + monthly_rate) ** (-months_left)
     if denom < 1e-12:
         return 0.0
     return monthly_rate * loan.principal / denom
 
 
 def simulate_loan_month(
-    loan: Loan, recovery_rate: float, base_pd_annual: float, base_cpr_annual: float
+    loan: Loan,
+    recovery_rate: float,
+    default_model: DefaultModel,
+    prepayment_model: PrepaymentModel,
+    rng: np.random.Generator,
 ) -> Dict[str, float]:
     """
-    Simulates one monthly period for a single loan:
-      1) Compute scheduled payment (interest + principal).
-      2) Check for default -> recover some fraction.
-      3) If no default, check for prepayment (partial or full).
-      4) Update loan's principal & age.
-    Returns a dict of interest and principal paid this month (from this loan).
+    Simulates one monthly period for a single loan, evaluating default and prepayment hazards.
     """
     if not loan.is_active():
         return {"interest": 0.0, "principal": 0.0}
 
-    # Scheduled Payment for a standard amortizing mortgage
     scheduled_payment = calculate_monthly_payment(loan)
     interest_portion = loan.principal * (loan.rate / 12.0)
-    principal_portion = scheduled_payment - interest_portion
-    if principal_portion < 0:
-        # Safety check if interest_portion > scheduled_payment
-        principal_portion = 0.0
+    principal_portion = max(0.0, scheduled_payment - interest_portion)
 
-    # Default Probability
-    pd_monthly = logistic_default_probability(loan, base_pd_annual)
-
-    # If default occurs
-    if np.random.rand() < pd_monthly:
-        # We recover only a fraction of the outstanding principal
+    # 1. Default Check
+    pd_monthly = default_model.calculate_monthly_rate(loan)
+    if rng.random() < pd_monthly:
         recovered = loan.principal * recovery_rate
-        # Loan is now done
         loan.principal = 0.0
         loan.age_months += 1
-        return {"interest": interest_portion, "principal": recovered}
+        return {"interest": 0.0, "principal": recovered}
 
-    # If no default, apply scheduled payment first
+    # 2. Amortization Check
     paid_interest = interest_portion
-    paid_principal = principal_portion
+    paid_principal = min(loan.principal, principal_portion)
 
-    # Prepayment Probability
-    ppay_monthly = simple_prepayment_probability(loan, base_cpr_annual)
-    if np.random.rand() < ppay_monthly:
-        # Full prepayment of whatever principal is left
-        paid_principal += loan.principal - principal_portion
+    # 3. Prepayment Check
+    ppay_monthly = prepayment_model.calculate_monthly_rate(loan)
+    if rng.random() < ppay_monthly:
+        remaining_balance = loan.principal - paid_principal
+        paid_principal += remaining_balance
 
-    # Apply the total principal to the loan
-    loan.principal -= paid_principal
-    if loan.principal < 1e-8:
-        loan.principal = 0.0
-
-    # Increment age
+    loan.principal = max(0.0, loan.principal - paid_principal)
     loan.age_months += 1
 
     return {"interest": paid_interest, "principal": paid_principal}
@@ -92,44 +68,50 @@ def simulate_loan_month(
 def run_simulation(
     loans: List[Loan],
     tranches: List[Tranche],
+    default_model: DefaultModel,
+    prepayment_model: PrepaymentModel,
     months: int = 360,
     recovery_rate: float = 0.60,
-    base_pd_annual: float = 0.03,
-    base_cpr_annual: float = 0.10,
+    seed: int = 42,
 ) -> Dict[str, List[float]]:
     """
-    Runs the multi-month simulation.
-    Returns a dict of monthly CF arrays: { "Senior": [...], "Mezz": [...], "Equity": [...] }.
+    Coordinates multi-month simulation of the RMBS portfolio.
     """
+    sim_loans = copy.deepcopy(loans)
+    rng = np.random.default_rng(seed)
+
+    for t in tranches:
+        t.outstanding_principal = t.initial_principal
+        t.interest_paid = 0.0
+        t.principal_paid = 0.0
+        t.cf_history = []
+
     monthly_results = {t.name: [] for t in tranches}
 
-    for m in range(months):
-        # 1) If everything is paid off, we can end early
-        if all((not ln.is_active()) for ln in loans) and all(
-            t.outstanding_principal < 1e-8 for t in tranches
-        ):
+    for _ in range(months):
+        loans_active = any(ln.is_active() for ln in sim_loans)
+        tranches_active = any(t.outstanding_principal > 1e-8 for t in tranches)
+
+        if not loans_active and not tranches_active:
             break
 
-        # 2) Simulate each loan for one month
         total_interest = 0.0
         total_principal = 0.0
-        for ln in loans:
+
+        for ln in sim_loans:
             perf = simulate_loan_month(
-                ln, recovery_rate, base_pd_annual, base_cpr_annual
+                ln, recovery_rate, default_model, prepayment_model, rng
             )
             total_interest += perf["interest"]
             total_principal += perf["principal"]
 
-        # 3) Allocate to tranches
         allocate_waterfall(total_interest, total_principal, tranches)
 
-        # 4) Record monthly CF for each tranche
         for t in tranches:
             cf = t.interest_paid + t.principal_paid
             monthly_results[t.name].append(cf)
             t.cf_history.append(cf)
 
-            # reset for next month
             t.interest_paid = 0.0
             t.principal_paid = 0.0
 
