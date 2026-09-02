@@ -1,45 +1,29 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rmbs_demo"
-version = "0.1.0"
-description = "Demo for RMBS Structuring & Underwriting"
-authors = [
-    { name = "Diljit Singh", email = "DiljitSingh22 @ googles service" }
-]
+name = "rmbs_structuring_demo"
+version = "1.0.0"
+description = "A standard Residential Mortgage-Backed Security (RMBS) Structuring & Underwriting engine"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
 dependencies = [
     "numpy>=1.21.0",
-    "pandas>=1.3.0",
     "matplotlib>=3.4.0",
-    "pytest>=7.0.0",
-    "black>=23.1.0",
-    "flake8>=5.0.0",
 ]
-readme = "README.md"
-license = { file = "LICENSE" }
 
-[tool.black]
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+]
+
+[tool.ruff]
 line-length = 88
-target-version = ["py38"]
-include = '\.pyi?$'
-exclude = '''
-/(
-    \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | _build
-  | buck-out
-  | build
-  | dist
-)/
-'''
+select = ["E", "F", "I"]
 
-[tool.flake8]
-max-line-length = 88
-ignore = ["E501", "F401"]
-exclude = [".git", "__pycache__", "build", "dist", "src/data"]
+[tool.pytest.ini_options]
+pythonpath = ["."]
